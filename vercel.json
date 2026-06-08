@@ -1,0 +1,6 @@
+{
+  "rewrites": [
+    { "source": "/send-otp", "destination": "/api/send-otp" },
+    { "source": "/verify-otp", "destination": "/api/verify-otp" }
+  ]
+}
