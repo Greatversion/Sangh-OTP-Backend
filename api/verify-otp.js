@@ -1,64 +1,80 @@
+if (process.env.NODE_ENV !== 'production') require('dotenv').config();
+
 const twilio = require('twilio');
 const admin = require('firebase-admin');
+const { parseBody, getFirebaseCredential } = require('../lib/helpers');
 
-const twilioClient = twilio(
-  process.env.TWILIO_ACCOUNT_SID,
-  process.env.TWILIO_AUTH_TOKEN
-);
-const verifyServiceSid = process.env.TWILIO_VERIFY_SERVICE_SID;
+function getTwilioClient() {
+  const sid = process.env.TWILIO_ACCOUNT_SID;
+  const token = process.env.TWILIO_AUTH_TOKEN;
+  if (!sid || !token) throw new Error('Twilio credentials not configured');
+  return twilio(sid, token);
+}
 
-if (!admin.apps.length) {
-  admin.initializeApp({
-    credential: admin.credential.cert({
-      projectId: process.env.FIREBASE_PROJECT_ID,
-      clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
-      privateKey: (process.env.FIREBASE_PRIVATE_KEY || '').replace(/\\n/g, '\n'),
-    }),
-  });
+function getVerifyServiceSid() {
+  const sid = process.env.TWILIO_VERIFY_SERVICE_SID;
+  if (!sid) throw new Error('Twilio Verify Service SID not configured');
+  return sid;
+}
+
+function ensureFirebaseAdmin() {
+  if (!admin.apps.length) {
+    const cred = getFirebaseCredential();
+    admin.initializeApp({
+      credential: admin.credential.cert({
+        projectId: cred.projectId,
+        clientEmail: cred.clientEmail,
+        privateKey: cred.privateKey,
+      }),
+    });
+  }
+  return admin;
 }
 
 module.exports = async (req, res) => {
+  res.setHeader('Content-Type', 'application/json');
+
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Method not allowed' });
   }
 
-  const { phone, otp } = req.body;
-
-  if (!phone || typeof phone !== 'string' || phone.trim().length < 10) {
-    return res.status(400).json({ error: 'Valid phone number is required' });
-  }
-  if (!otp || typeof otp !== 'string' || otp.trim().length === 0) {
-    return res.status(400).json({ error: 'OTP is required' });
-  }
-
   try {
-    const verificationCheck = await twilioClient.verify.v2
-      .services(verifyServiceSid)
-      .verificationChecks.create({ to: phone.trim(), code: otp.trim() });
+    const body = await parseBody(req);
+    const phone = (body.phone || '').trim();
+    const otp = (body.otp || '').trim();
 
-    if (verificationCheck.status !== 'approved') {
-      return res.status(400).json({
-        error: 'Invalid or expired OTP',
-        status: verificationCheck.status,
-      });
+    if (!phone || !/^\+\d{7,15}$/.test(phone)) {
+      return res.status(400).json({ error: 'Valid phone number in E.164 format is required' });
+    }
+    if (!otp || !/^\d{4,8}$/.test(otp)) {
+      return res.status(400).json({ error: 'Valid OTP is required (4-8 digits)' });
     }
 
-    const normalizedPhone = phone.trim();
+    const client = getTwilioClient();
+    const serviceSid = getVerifyServiceSid();
+
+    const verificationCheck = await client.verify.v2
+      .services(serviceSid)
+      .verificationChecks.create({ to: phone, code: otp });
+
+    if (verificationCheck.status !== 'approved') {
+      return res.status(400).json({ error: 'Invalid or expired OTP' });
+    }
+
+    const fbAdmin = ensureFirebaseAdmin();
 
     let firebaseUser;
     try {
-      firebaseUser = await admin.auth().getUserByPhoneNumber(normalizedPhone);
+      firebaseUser = await fbAdmin.auth().getUserByPhoneNumber(phone);
     } catch (err) {
       if (err.code === 'auth/user-not-found') {
-        firebaseUser = await admin.auth().createUser({
-          phoneNumber: normalizedPhone,
-        });
+        firebaseUser = await fbAdmin.auth().createUser({ phoneNumber: phone });
       } else {
         throw err;
       }
     }
 
-    const customToken = await admin.auth().createCustomToken(firebaseUser.uid);
+    const customToken = await fbAdmin.auth().createCustomToken(firebaseUser.uid);
 
     return res.status(200).json({
       success: true,
@@ -67,8 +83,6 @@ module.exports = async (req, res) => {
     });
   } catch (err) {
     console.error('verify-otp error:', err);
-    return res.status(500).json({
-      error: err.message || 'Verification failed',
-    });
+    return res.status(500).json({ error: 'Verification failed. Please try again.' });
   }
 };

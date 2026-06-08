@@ -5,8 +5,6 @@ node_modules/
 .env
 
 
-
-
 # IDEs and system files
 .vscode/
 .DS_Store
