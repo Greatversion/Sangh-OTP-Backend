@@ -1,0 +1,14 @@
+# Node modules
+node_modules/
+
+# Local Environment Variables Secrets
+.env
+
+
+# Firebase Secret Keys
+*.json
+firebase-key.json
+
+# IDEs and system files
+.vscode/
+.DS_Store
